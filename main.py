@@ -21,7 +21,7 @@ try:
     print('ADB server already initiated')
 except RuntimeError:  # adb server probably not on
     # note ppadb does not offer ability to start server https://github.com/Swind/pure-python-adb/issues/36
-    subprocess.call("adb version", shell=True)
+    adb = subprocess.Popen(['adb.exe', 'start-server'])
     print('ADB server was initiated')
     pass
 
