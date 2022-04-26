@@ -1,6 +1,6 @@
 import re
 import socket
-
+import subprocess
 from fastapi import FastAPI
 from ppadb import InstallError
 from starlette.requests import Request
@@ -16,6 +16,14 @@ templates = Jinja2Templates("templates")
 global started_state
 
 client = AdbClient(host="127.0.0.1", port=5037)
+try:
+    client.version()
+    print('ADB server already initiated')
+except RuntimeError:  # adb server probably not on
+    # note ppadb does not offer ability to start server https://github.com/Swind/pure-python-adb/issues/36
+    subprocess.call("adb version", shell=True)
+    print('ADB server was initiated')
+    pass
 
 @app.get("/")
 async def home(request: Request):
@@ -24,6 +32,7 @@ async def home(request: Request):
     :param request: the Request() object
     :return: a TemplateResponse object containing the homepage
     """
+
     return templates.TemplateResponse("home.html", {"request": request})
 
 
