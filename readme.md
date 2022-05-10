@@ -6,9 +6,9 @@ To run this, you need to install all the dependencies in requirements.txt as fol
 
 `pip install -r requirements.txt`
 
-Note in PyCharm you can set up a configuration to manage the dev server. See https://stackoverflow.com/a/66787462/960471
-![image](https://user-images.githubusercontent.com/595166/165240365-b7459e8c-eeca-41f8-8eb1-c835b5e77b64.png)
+In PyCharm 2022.1 there is a dedicated FastAPI Configuration you an use, which fixes some issues we were encountering with port blocking on restart.
 
+![img.png](img.png)
 
 ## local dev
 Run the uvicorn command, which keeps the server running and refreshes it every time there is a change:
