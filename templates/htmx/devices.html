@@ -1,3 +1,4 @@
+{% set cache_blocker = '123' %}
 {% for device in devices %}
   {% set device_serial = device.serial %}
     {% include 'htmx/device.html' %}

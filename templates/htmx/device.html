@@ -1,4 +1,4 @@
-<div hx-get="device-screen/500/large/{{ device_serial }}" hx-trigger="every 2s">
-  <img src="screen/500/large/{{ device_serial }}.png" alt="device screenshot">
+<div hx-get="device-screen/500/large/{{ device_serial }}" hx-trigger="every 10s">
+  <img style='max-width: 100px;' src="screen/500/large/{{ device_serial }}/{{ cache_blocker }}.png" alt="device screenshot">
   device: {{ device_serial }}
 </div>
