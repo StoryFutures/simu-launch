@@ -1,4 +1,24 @@
-<div hx-get="device-screen/500/large/{{ device_serial }}" hx-trigger="every 10s">
-  <img style='max-width: 100px;' src="screen/500/large/{{ device_serial }}/{{ cache_blocker }}.png" alt="device screenshot">
-  device: {{ device_serial }}
-</div>
+{% if err %}
+  <h4 style='height: 320px;'>{{ err }}</h4>
+{% else %}
+
+
+  <figure class='figure border p-1 m-1' style="max-width: 400px"
+          hx-get="device-screen/500/large/{{ device_serial }}" hx-trigger="every 10s" hx-swap="outerHTML">
+
+    <img class='figure-img img-fluid rounded rounded mx-auto d-block' style='min-height: 320px;'
+         src="data:image/png;base64,{{ base64_image }}"
+         alt="device screenshot">
+    <div>
+     <figcaption class="figure-caption"> device: {{ device_serial }}</figcaption>
+      <div class="btn-group" role="group" aria-label="Basic example">
+        <a class="btn btn-primary" hx-get="device-button/{{ device_serial }}/power" hx-swap="None">power</a>
+        <a class="btn btn-primary" hx-get="device-button/{{ device_serial }}/vol-up" hx-swap="None">Vol up</a>
+        <a class="btn btn-primary" hx-get="device-button/{{ device_serial }}/vol-down" hx-swap="None">Vol down</a>
+      </div>
+    </div>
+  </figure>
+
+{% endif %}
+
+
