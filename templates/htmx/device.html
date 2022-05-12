@@ -3,10 +3,10 @@
 {% else %}
 
 
-  <figure class='figure border p-1 m-1' style="max-width: 400px"
-          hx-get="device-screen/500/large/{{ device_serial }}" hx-trigger="every 10s" hx-swap="outerHTML">
+  <figure class='figure border p-1 m-1' style="max-width: 192px"
+          hx-get="device-screen/500/large/{{ device_serial }}" hx-trigger="every 1s" hx-swap="outerHTML">
 
-    <img class='figure-img img-fluid rounded rounded mx-auto d-block' style='min-height: 320px;'
+    <img class='figure-img img-fluid rounded rounded mx-auto d-block' style='min-height: 192px;'
          src="data:image/png;base64,{{ base64_image }}"
          alt="device screenshot">
     <div>

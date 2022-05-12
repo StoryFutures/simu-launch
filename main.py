@@ -5,13 +5,16 @@ import random
 import tempfile
 from functools import partial
 from multiprocessing import Process, Pool, cpu_count
-
+import asyncio
+import aiofiles
 import cv2
 import numpy as np
 from fastapi import FastAPI
 from ppadb import InstallError
 from ppadb.client import Client as AdbClient
 from ppadb.device import Device
+from ppadb.device_async import DeviceAsync
+from ppadb.client_async import ClientAsync as AdbClientAsync
 from starlette.requests import Request
 from starlette.responses import FileResponse
 from starlette.staticfiles import StaticFiles
@@ -27,6 +30,7 @@ templates = Jinja2Templates(directory="templates")
 global started_state
 
 client = AdbClient(host="127.0.0.1", port=5037)
+client_async = AdbClientAsync(host="127.0.0.1", port=5037)
 
 
 def check_adb_running():
@@ -227,15 +231,15 @@ my_devices = None
 screen_shots_cache = {}
 
 async def check_image(device_serial, refresh_ms, size):
-    def gen_image():
+    async def gen_image():
 
         with tempfile.NamedTemporaryFile(mode="w+b", suffix=".png", delete=False) as FOUT:
             try:
-                device: Device = my_devices[device_serial]
+                device: DeviceAsync = my_devices[device_serial]
             except TypeError:
                 return False
 
-            im = device.screencap()
+            im = await device.screencap()
             image = cv2.imdecode(np.frombuffer(im, np.uint8), cv2.IMREAD_COLOR)
 
             # cv2.imshow("", image)
@@ -265,7 +269,9 @@ async def check_image(device_serial, refresh_ms, size):
             milliseconds=refresh_ms) < timestamp:
         screen_shots_cache[device_serial][size]['timestamp'] = timestamp
         try:
-            screen_shots_cache[device_serial][size]['file_id'] = gen_image()
+            print(1)
+            screen_shots_cache[device_serial][size]['file_id'] = await gen_image()
+            print(2)
         except RuntimeError:
             return False
     return True
@@ -284,7 +290,7 @@ async def device_button(request: Request, device_serial: str, button: str):
     print(11, device.shell('sendevent ' + button_up), 222)
     print(11, device.shell('sendevent ' + button_down), 1591)
     print(11, device.shell('sendevent ' + button_up), 2221)
-    print(411, device.shell('adb shell media volume --stream 3 --set 15' ), 2221)
+    print(411, device.shell('adb shell media volume --stream 3 --set 15'), 2221)
 
     pass
 
@@ -316,6 +322,11 @@ async def devicescreen(request: Request, refresh_ms: int, size: str, device_seri
 async def linkup(request: Request):
     check_adb_running()
     global my_devices
-    my_devices = {device.serial: device for device in client.devices()}
+    devices = await client_async.devices()
+    my_devices = {device.serial: device for device in devices}
+
+    for device in devices:
+        await device.shell('adb shell setprop debug.oculus.capture.width 192')
+        await device.shell('adb shell setprop debug.oculus.capture.height 108')
 
     return templates.TemplateResponse("htmx/devices.html", {"request": request, "devices": client.devices()})
