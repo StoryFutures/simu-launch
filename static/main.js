@@ -543,8 +543,8 @@ var devices_manager = function () {
             return response.json()
         })
         .then(function (json) {
-            var devices_count  = json['devices'].length;
-            if(devices_count>0){
+            var devices_count = json['devices'].length;
+            if (devices_count > 0) {
                 document.getElementById('no-devices').remove();
             }
 
@@ -707,4 +707,14 @@ function stop_some_experience(el) {
 
         }
     })
+}
+
+
+var ws = new WebSocket("ws://" + location.host + "/ws");
+ws.onmessage = function (event) {
+
+};
+
+function sendMessage() {
+    ws.send('hi')
 }

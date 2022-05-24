@@ -13,7 +13,7 @@ from ppadb.device_async import DeviceAsync
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from multiprocessing import Process, Pool, cpu_count
-from fastapi import FastAPI, UploadFile, File, Form, Depends
+from fastapi import FastAPI, UploadFile, File, Form, Depends, WebSocket
 
 from ppadb import InstallError
 from starlette.requests import Request
@@ -53,7 +53,10 @@ def check_adb_running(func):
     @wraps(func)
     async def wrapper(*args, **kwargs):
         try:
-            client.devices()
+            for d in client.devices():
+                serial = d.serial
+                if d.serial not in screen_shots_cache:
+                    print(222)
         except RuntimeError as e:
             if e.__str__().find("Is adb running on your computer?"):
                 print("ADB Server not running, starting it now!")
@@ -62,6 +65,14 @@ def check_adb_running(func):
         return await func(*args, **kwargs)
 
     return wrapper
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    while True:
+        data = await websocket.receive_text()
+        await websocket.send_text(f"Message text was: {data}")
 
 
 @app.post("/settings")
@@ -517,9 +528,7 @@ async def volume(payload: Volume):
     return {"success": True}
 
 
-my_devices = None
 screen_shots_cache = {}
-
 
 async def check_image(device_serial, refresh_ms, size):
     async def gen_image():
@@ -548,6 +557,7 @@ async def check_image(device_serial, refresh_ms, size):
 
     if device_serial not in screen_shots_cache:
         info = client.device(device_serial).list_features()
+
         screen_shots_cache[device_serial] = {'info': info,
                                              'quest': 'oculus.hardware.standalone_vr' in info, }
 
