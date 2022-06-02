@@ -7,6 +7,7 @@ from functools import partial, wraps
 import cv2
 import numpy as np
 from fastapi.encoders import jsonable_encoder
+from fastapi_cache.backends.inmemory import InMemoryBackend
 from ppadb.client import Client as AdbClient
 from ppadb.client_async import ClientAsync as AdbClientAsync
 from ppadb.device import Device
@@ -27,6 +28,8 @@ from sql_app import models, crud
 from sql_app.crud import get_all_apk_details, get_apk_details, set_device_icon, get_device_icon, crud_defaults
 from sql_app.database import engine, SessionLocal
 from sql_app.schemas import APKDetailsCreate, APKDetailsBase
+from fastapi_cache import FastAPICache
+from fastapi_cache.decorator import cache
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -39,6 +42,19 @@ simu_application_name = ""
 global_volume = 10
 HOME_APP_APK = "com.TrajectoryTheatre.SimuLaunchHome.apk"
 
+
+icons = ['3-bars', '2-bars', '1-bar', 'circle-fill', 'square-fill', 'plus-lg', 'heart-fill', 'triangle-fill']
+cols = ['red', 'pink', 'fuchsia', 'blue', 'green']
+
+check_for_new_devices_poll_s = 8
+defaults = {
+    "screen_width": 192,
+    "screen_height": 108,
+    "check_for_new_devices_poll": check_for_new_devices_poll_s * 1000
+}
+crud_defaults(SessionLocal(), defaults)
+
+FastAPICache.init(InMemoryBackend())
 
 def get_db():
     db = SessionLocal()
@@ -76,8 +92,8 @@ async def settings(screen_updates: int = Form(...),
     crud_defaults(SessionLocal(), defaults)
     return {'success': True}
 
-
 @app.get("/devices")
+@cache(expire=check_for_new_devices_poll_s)
 @check_adb_running
 async def devices(db: Session = Depends(get_db)):
     """
@@ -97,17 +113,6 @@ async def devices(db: Session = Depends(get_db)):
     except RuntimeError as e:
         errs.append(str(e))
     return {'devices': devices, 'errs': errs}
-
-
-icons = ['3-bars', '2-bars', '1-bar', 'circle-fill', 'square-fill', 'plus-lg', 'heart-fill', 'triangle-fill']
-cols = ['red', 'pink', 'fuchsia', 'blue', 'green']
-
-defaults = {
-    "screen_width": 192,
-    "screen_height": 108,
-    "check_for_new_devices_poll": 8000
-}
-crud_defaults(SessionLocal(), defaults)
 
 
 @app.get("/")
@@ -706,6 +711,7 @@ async def device_command(request: Request, command: str, device_serial: str, db:
         # https://stackoverflow.com/a/64241561/960471
         info = await get_exp_info(device)
         outcome = await device.shell(f"am start -n {info}")
+        print(111, outcome)
         return {'success': 'Starting' in outcome}
     elif command == 'start_experience_some':
         my_devices = json['devices'].replace('[', "").replace(']', "").replace("'", "").replace(' ', '')
