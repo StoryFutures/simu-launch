@@ -31,8 +31,9 @@ from sql_app.schemas import APKDetailsCreate, APKDetailsBase
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+location = "/home/simu-launch/"
+app.mount("/static", StaticFiles(directory=location + 'static'), name="static")
+templates = Jinja2Templates(directory= location + 'templates')
 
 simu_application_name = ""
 global_volume = 10
