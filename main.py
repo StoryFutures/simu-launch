@@ -35,7 +35,7 @@ from helpers import (
     process_devices,
     connect_actions,
     HOME_APP_APK,
-    home_app_installed,
+    home_app_installed, HOME_APP_ENABLED,
 )
 from models_pydantic import Volume, Devices, Experience, NewExperience, StartExperience
 from sql_app import models, crud
@@ -129,39 +129,40 @@ async def wait_host_port(host, port, duration=10, delay=2):
     return False
 
 
-async def scan_devices():
-    return my_devices
+async def check_alive(device):
+    device_serial = device.serial
+    if "." not in device_serial:
+        return True
+    try:
+        ip_port = device_serial.split(":")
+        ip = ip_port[0]
+        port = int(ip_port[1])
+        is_open = await wait_host_port(host=ip, port=port, duration=1, delay=1)
 
+        if is_open:
+            return True
 
-# below should really be stored in redis as storing it as below limits us to one thread
-my_devices = []
+    except RuntimeError as e:
+        err = e.__str__()
+        print("issue disconnecting disconnected wifi device (caution): " + err)
 
+    return False
 
 @app.on_event("startup")
 @repeat_every(seconds=check_for_new_devices_poll_s)
 async def _scan_devices():
-    global my_devices
-    my_devices.clear()
     device: Device
     for device in client.devices():
-        device_serial = str(device.serial)
-
+        await check_alive(device)
+        device_serial = device.serial
         if "." not in device_serial:
-            my_devices.append(device)
-        else:
-            try:
-                ip_port = device_serial.split(":")
-                ip = ip_port[0]
-                port = int(ip_port[1])
-                is_open = await wait_host_port(host=ip, port=port, duration=1, delay=1)
+            continue
+        #device.shell('input keyevent 26')
+        print('wakeup', device.serial, device.shell('input keyevent KEYCODE_WAKEUP'))
+        #device.shell('settings put global mStayOn true')
+        #print(device.shell('settings get global mStayOn'),333)
+        #print(device.shell('dumpsys power'))
 
-                if is_open:
-                    my_devices.append(device)
-
-            except RuntimeError as e:
-                err = e.__str__()
-                print("issue disconnecting disconnected wifi device (caution): " + err)
-    return my_devices
 
 
 def check_adb_running(func):
@@ -204,7 +205,10 @@ async def devices(db: Session = Depends(get_db)):
     errs = []
 
     device: Device
-    for device in await scan_devices():
+
+    for device in client.devices():
+        if not await check_alive(device):
+            continue
         device_info = {
             "message": "",
             "id": "",
@@ -421,15 +425,20 @@ async def load(payload: Experience):
             "success": False,
             "error": "Cannot find the Experience APK in the directory. Make sure you uploaded it!",
         }
-
+    errs = []
     try:
         for device in client_list:
+            if not await check_alive(device):
+                errs.append(f'Problem installing on this device: {device.serial}. Temporarily unavailable')
+                continue
             print("Installing " + apk_path + " on " + device.serial)
             p = Process(target=device.install, args=(apk_path,))
             p.start()
     except InstallError as e:
         return {"success": False, "error": e.__str__()}
 
+    if errs:
+        return {"success": False, "error": ','.join(errs)}
     return {"success": True, "device_count": len(client_list)}
 
 
@@ -491,14 +500,15 @@ async def add_remote_experience(payload: NewExperience, db: Session = Depends(ge
 
 
 def launch_home_app(device_id: str):
-    device = client.device(device_id)
-    outcome = launch_app(
-        device,
-        app_name=HOME_APP_APK,
-        d_type=True,
-        command="com.unity3d.player.UnityPlayerActivity",
-    )
-    return outcome
+    if HOME_APP_ENABLED:
+        device = client.device(device_id)
+        outcome = launch_app(
+            device,
+            app_name=HOME_APP_APK,
+            d_type=True,
+            command="com.unity3d.player.UnityPlayerActivity",
+        )
+        return outcome
 
 
 @app.post("/stop")
@@ -617,7 +627,6 @@ async def connect(
     remote_address = ""
 
     device: Device = client.device(device_serial)
-    home_app_already_installed = home_app_installed(device)
 
     print("json ", json)
     print("address ", remote_address)
@@ -682,11 +691,12 @@ async def connect(
                     + str(BASE_PORT)
                 )
                 message = f"successfully added device {device_ip}."
-                if not home_app_already_installed:
-                    message += (
-                        f" Please note that the home app needed to be installed, so your device wont "
-                        f"appear for a few moments"
-                    )
+                if HOME_APP_ENABLED:
+                    if not home_app_installed(device):
+                        message += (
+                            f" Please note that the home app needed to be installed, so your device wont "
+                            f"appear for a few moments"
+                        )
                 return {"success": True, "serial": device_ip, "message": message}
             else:
                 return {
@@ -786,7 +796,7 @@ async def screen_grab():
     :return: a dictionary containing the success flag
     """
 
-    my_devices = await scan_devices()
+    my_devices = await client.devices()
 
     screen_caps_folder = "screenshots/"
 
@@ -797,10 +807,11 @@ async def screen_grab():
         os.makedirs(folder)
         i = 0
         for device in my_devices:
-            result = device.screencap()
-            with open(folder + "screen" + str(i) + ".png", "wb") as fp:
-                fp.write(result)
-            i += 1
+            if await check_alive(device):
+                result = device.screencap()
+                with open(folder + "screen" + str(i) + ".png", "wb") as fp:
+                    fp.write(result)
+                i += 1
     except RuntimeError as e:
         return {"success": False, "errors": e.__str__()}
 
@@ -889,8 +900,8 @@ async def devicescreen(
 async def battery(device_serial: str):
     try:
         device: Device = client.device(device_serial)
-        if not device:
-            return "Device does not exist"
+        if not await check_alive(device):
+            return "..."
         battery_level = device.get_battery_level()
         if str(battery_level) == "null":
             return "?"
@@ -916,7 +927,6 @@ async def _experiences(device_serial: str = None, device: Device = None) -> []:
     experiences.sort(key=lambda el: el["name"])
 
     return experiences
-
 
 @app.get("/loaded-experiences/{device_serial}")
 async def loaded_experiences(request: Request, device_serial: str):
@@ -948,7 +958,10 @@ async def devices_experiences(request: Request):
     devices_lookup = {}
     counter = Counter()
 
-    for device in await scan_devices():
+    for device in client.devices():
+        is_alive = await check_alive(device)
+        if not is_alive:
+            continue
         experiences = await _experiences(device=device)
         print(experiences, 222)
         experiences_map = {el["package"]: el["name"] for el in experiences}
@@ -1117,5 +1130,10 @@ async def device_icon(
 @app.get("/current-experience/{device_serial}")
 async def current_experience(request: Request, device_serial: str):
     device = await client_async.device(device_serial)
-    current_app = await get_running_app(device)
+    if await check_alive(device):
+        current_app = await get_running_app(device)
+        if current_app == 'com.oculus.shellenv':
+            current_app = ''
+    else:
+        current_app = 'please wait'
     return {"current_app": current_app}

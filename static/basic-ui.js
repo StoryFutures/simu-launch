@@ -187,7 +187,7 @@ function get_devices() {
                 devicetable.updateStatus(devicetable.deviceList);
             }
             document.querySelector("device-table").updateStatus(document.querySelector("device-table").deviceList);
-            if (devices_count == 0) {
+            if (devices_count === 0) {
                 document.getElementById("main-container").innerHTML = `<h2 class="w-100 text-center p-3" id="no-devices">No Devices Connected.</h2>`
 
             }
