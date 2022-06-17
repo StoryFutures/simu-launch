@@ -3,16 +3,14 @@ import os
 from ppadb.client import Client as AdbClient
 from ppadb.device import Device
 
-from models_pydantic import Devices
-
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 HOME_APP_VERSION = "0.1"
 HOME_APP_APK = "com.TrajectoryTheatre.SimuLaunchHome.apk"
 HOME_APP_ENABLED = False
 
-def process_devices(client: AdbClient, payload: Devices):
-    if payload.devices:
-        return [Device(client, device) for device in payload.devices]
+def process_devices(client: AdbClient, devices):
+    if devices:
+        return [Device(client, device) for device in devices]
     return client.devices()
 
 

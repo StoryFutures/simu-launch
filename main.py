@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import datetime
+import json
 import multiprocessing
 import os
 import platform
@@ -11,12 +12,10 @@ from multiprocessing import Process, Pool, cpu_count
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, Form, Depends
-from fastapi.encoders import jsonable_encoder
-from fastapi_cache import FastAPICache
-from fastapi_cache.backends.inmemory import InMemoryBackend
-from fastapi_cache.decorator import cache
-from fastapi_utils.tasks import repeat_every
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from flask import Flask, render_template, request
+from flask_pydantic import validate
 from ppadb import InstallError
 from ppadb.client import Client as AdbClient
 from ppadb.client_async import ClientAsync as AdbClientAsync
@@ -24,10 +23,7 @@ from ppadb.device import Device
 from ppadb.device_async import DeviceAsync
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
-from starlette.background import BackgroundTasks
-from starlette.requests import Request
-from starlette.staticfiles import StaticFiles
-from starlette.templating import Jinja2Templates
+
 
 from helpers import (
     launch_app,
@@ -37,7 +33,6 @@ from helpers import (
     HOME_APP_APK,
     home_app_installed, HOME_APP_ENABLED,
 )
-from models_pydantic import Volume, Devices, Experience, NewExperience, StartExperience
 from sql_app import models, crud
 from sql_app.crud import (
     get_all_apk_details,
@@ -51,10 +46,9 @@ from sql_app.schemas import APKDetailsCreate, APKDetailsBase
 
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI()
+app = Flask(__name__, static_url_path="/static")
+
 location = "/home/simu-launch/" if "Linux" in platform.system().lower() else ""
-app.mount("/static", StaticFiles(directory=location + "static"), name="static")
-templates = Jinja2Templates(directory=location + "templates")
 
 simu_application_name = ""
 global_volume = 10
@@ -78,8 +72,6 @@ defaults = {
     "check_for_new_devices_poll": check_for_new_devices_poll_s * 1000,
 }
 crud_defaults(SessionLocal(), defaults)
-
-FastAPICache.init(InMemoryBackend())
 
 
 def get_db():
@@ -129,7 +121,7 @@ async def wait_host_port(host, port, duration=10, delay=2):
     return False
 
 
-async def check_alive(device):
+def check_alive(device):
     device_serial = device.serial
     if "." not in device_serial:
         return True
@@ -137,7 +129,7 @@ async def check_alive(device):
         ip_port = device_serial.split(":")
         ip = ip_port[0]
         port = int(ip_port[1])
-        is_open = await wait_host_port(host=ip, port=port, duration=1, delay=1)
+        is_open = wait_host_port(host=ip, port=port, duration=1, delay=1)
 
         if is_open:
             return True
@@ -148,12 +140,10 @@ async def check_alive(device):
 
     return False
 
-@app.on_event("startup")
-@repeat_every(seconds=check_for_new_devices_poll_s)
-async def _scan_devices():
+def _scan_devices():
     device: Device
     for device in client.devices():
-        await check_alive(device)
+        check_alive(device)
         device_serial = device.serial
         if "." not in device_serial:
             continue
@@ -162,6 +152,10 @@ async def _scan_devices():
         #device.shell('settings put global mStayOn true')
         #print(device.shell('settings get global mStayOn'),333)
         #print(device.shell('dumpsys power'))
+
+sched = BackgroundScheduler(daemon=True)
+sched.add_job(_scan_devices, 'interval', seconds=check_for_new_devices_poll_s)
+sched.start()
 
 
 
@@ -186,15 +180,14 @@ def check_adb_running(func):
 
 
 @app.post("/settings")
-async def settings(screen_updates: int = Form(...), db: Session = Depends(get_db)):
+async def settings(screen_updates, db: Session = get_db()):
     crud.update_settings(db, screen_updates=screen_updates)
     crud_defaults(SessionLocal(), defaults)
     return {"success": True}
 
 
-@app.get("/devices")
-@cache(expire=check_for_new_devices_poll_s)
-async def devices(db: Session = Depends(get_db)):
+@app.get("/devices") # @cache(expire=check_for_new_devices_poll_s)
+async def devices(db: Session = get_db()):
     """
         Gets a list of all devices connected via ADB.
 
@@ -207,7 +200,7 @@ async def devices(db: Session = Depends(get_db)):
     device: Device
 
     for device in client.devices():
-        if not await check_alive(device):
+        if not check_alive(device):
             continue
         device_info = {
             "message": "",
@@ -238,9 +231,9 @@ async def devices(db: Session = Depends(get_db)):
 
 @app.get("/d")
 @check_adb_running
-async def devices_page(request: Request):
-    return templates.TemplateResponse(
-        "pages/devices_page.html",
+async def devices_page():
+    return render_template(
+        "pages/devices_page.html", **
         {
             "request": request,
             "app_name": simu_application_name,
@@ -253,7 +246,7 @@ async def devices_page(request: Request):
 
 @app.get("/")
 @check_adb_running
-async def home(request: Request):
+async def home():
     """
         View mainly responsible for handling the front end, since nothing will happen on the backend at this endpoint.
     :param db: the database dependency
@@ -263,8 +256,8 @@ async def home(request: Request):
 
     global simu_application_name
 
-    return templates.TemplateResponse(
-        "home-basic.html",
+    return render_template(
+        "home-basic.html", **
         {
             "request": request,
             "app_name": simu_application_name,
@@ -277,7 +270,7 @@ async def home(request: Request):
 
 @app.get("/monitor")
 @check_adb_running
-async def home(request: Request):
+async def monitor():
     """
         View mainly responsible for handling the front end, since nothing will happen on the backend at this endpoint.
     :param db: the database dependency
@@ -286,9 +279,10 @@ async def home(request: Request):
     """
 
     global simu_application_name
+    global defaults
 
-    return templates.TemplateResponse(
-        "home.html",
+    return render_template(
+        "home.html", **
         {
             "request": request,
             "app_name": simu_application_name,
@@ -300,9 +294,9 @@ async def home(request: Request):
 
 
 @app.get("/experiences")
-async def experiences(request: Request, db: Session = Depends(get_db)):
-    return templates.TemplateResponse(
-        "experiences/set_experience_content.html",
+async def experiences(db: Session = get_db()):
+    return render_template(
+        "experiences/set_experience_content.html", **
         {
             "request": request,
             "choices": [item.apk_name for item in get_all_apk_details(db)],
@@ -311,7 +305,7 @@ async def experiences(request: Request, db: Session = Depends(get_db)):
 
 
 @app.post("/start")
-async def start(payload: StartExperience, db: Session = Depends(get_db)):
+async def start(db: Session = get_db()):
     """
         Starts the experience on all devices through the adb shell commands.
 
@@ -319,16 +313,17 @@ async def start(payload: StartExperience, db: Session = Depends(get_db)):
     :param db: the database dependency
     :return: dictionary of all device serial numbers
     """
-    client_list = process_devices(client, payload)
+    client_list = process_devices(client, request.json['devices'])
+    experience = request.json['experience']
 
     global simu_application_name
 
-    if payload.experience:
-        simu_application_name = payload.experience
+    if experience:
+        simu_application_name = experience
     else:
         return {"success": False, "error": "No experience specified!"}
 
-    item = jsonable_encoder(crud.get_apk_details(db, apk_name=simu_application_name))
+    item = json.dumps(crud.get_apk_details(db, apk_name=simu_application_name))
 
     try:
         if item is None:
@@ -363,9 +358,9 @@ async def start(payload: StartExperience, db: Session = Depends(get_db)):
 
 @app.post("/upload")
 async def upload(
-    file: UploadFile = File(...),
-    command: str = Form(...),
-    db: Session = Depends(get_db),
+    file,
+    command: str,
+    db: Session = get_db(),
 ):
     """
         Upload an experience to the backend so that it can be later loaded on the device.
@@ -402,7 +397,7 @@ async def upload(
 
 
 @app.post("/load")
-async def load(payload: Experience):
+async def load():
     """
         Installs the experience on selected or all devices.
 
@@ -410,16 +405,18 @@ async def load(payload: Experience):
     :return: a success dictionary signifying the operation was successful
     """
 
-    client_list = process_devices(client, payload)
+    client_list = process_devices(client, request.json['devices'])
 
     apk_paths = os.listdir("apks")
     apk_path = "apks/"
 
-    global simu_application_name
-    simu_application_name = payload.experience
+    experience = request.json['experience']
 
-    if payload.experience in apk_paths:
-        apk_path += payload.experience
+    global simu_application_name
+    simu_application_name = experience
+
+    if experience in apk_paths:
+        apk_path += experience
     else:
         return {
             "success": False,
@@ -428,7 +425,7 @@ async def load(payload: Experience):
     errs = []
     try:
         for device in client_list:
-            if not await check_alive(device):
+            if not check_alive(device):
                 errs.append(f'Problem installing on this device: {device.serial}. Temporarily unavailable')
                 continue
             print("Installing " + apk_path + " on " + device.serial)
@@ -443,7 +440,7 @@ async def load(payload: Experience):
 
 
 @app.post("/remove-remote-experience")
-async def remove_remote_experience(payload: Experience, db: Session = Depends(get_db)):
+async def remove_remote_experience(db: Session = get_db()):
     """
         Removes an experience from the database.
 
@@ -451,10 +448,10 @@ async def remove_remote_experience(payload: Experience, db: Session = Depends(ge
     :param db: the database dependency
     :return: a success dictionary signifying the operation was successful
     """
-
+    experience = request.json['experience']
     try:
-        if payload.experience:
-            db.delete(get_apk_details(db, apk_name=payload.experience))
+        if experience:
+            db.delete(get_apk_details(db, apk_name=experience))
             db.commit()
             return {"success": True}
 
@@ -464,7 +461,7 @@ async def remove_remote_experience(payload: Experience, db: Session = Depends(ge
 
 
 @app.post("/add-remote-experience")
-async def add_remote_experience(payload: NewExperience, db: Session = Depends(get_db)):
+async def add_remote_experience(db: Session = get_db()):
     """
         Adds a new experience, which has either been previously installed or is available on the device already.
 
@@ -473,18 +470,22 @@ async def add_remote_experience(payload: NewExperience, db: Session = Depends(ge
     :return: a success dictionary signifying the operation was successful
     """
 
-    try:
-        device_type = 0 if payload.command == "android" else 1
+    experience_name = request.json.get('experience_name', None)
+    apk_name = request.json.get('apk_name')
+    command = request.json.get('command')
 
-        if payload.apk_name is None or payload.apk_name == "":
+    try:
+        device_type = 0 if command == "android" else 1
+
+        if apk_name is None or apk_name == "":
             raise SQLAlchemyError(
                 "No APK name provided. Please make sure an APK name has been provided!"
             )
 
         item = APKDetailsBase(
-            experience_name=payload.experience_name,
-            apk_name=payload.apk_name,
-            command="" if payload.command == "android" else payload.command,
+            experience_name=experience_name,
+            apk_name=apk_name,
+            command="" if command == "android" else command,
             device_type=device_type,
         )
 
@@ -512,7 +513,7 @@ def launch_home_app(device_id: str):
 
 
 @app.post("/stop")
-async def stop(payload: Experience, db: Session = Depends(get_db)):
+async def stop(db: Session = get_db()):
     """
         Stops the experience on all devices through ADB shell commands
 
@@ -521,12 +522,14 @@ async def stop(payload: Experience, db: Session = Depends(get_db)):
     :return: a dictionary containing the success flag of the operation and any errors
     """
 
-    client_list = process_devices(client, payload)
+    experience = request.json['experience']
 
-    if not payload.experience:
+    client_list = process_devices(client, request.json['devices'])
+
+    if not experience:
         return {"success": False, "error": "No experience to be stopped"}
 
-    item = jsonable_encoder(crud.get_apk_details(db, apk_name=payload.experience))
+    item = json.dumps(crud.get_apk_details(db, apk_name=experience))
 
     if item is None:
         return {
@@ -552,7 +555,7 @@ async def stop(payload: Experience, db: Session = Depends(get_db)):
 
 @app.post("/connect")
 @app.get("/connect")
-async def connect_raw(request: Request):
+async def connect_raw():
     """
         Connects a device wirelessly to the server on port 5555. After the device is connected, it can be unplugged from
         the USB.
@@ -609,7 +612,7 @@ async def connect_raw(request: Request):
 
 @app.get("/connect/{device_serial}")
 async def connect(
-    request: Request, device_serial: str, background_tasks: BackgroundTasks
+    device_serial: str
 ):
     """
         Connects a device wirelessly to the server on port 5555. After the device is connected, it can be unplugged from
@@ -671,13 +674,8 @@ async def connect(
 
         if not p.is_alive():
             connected_device = Device(client, device_ip)
-            connect_actions(
-                connected_device,
-                global_volume,
-            )
 
-            background_tasks.add_task(
-                connect_actions,
+            connect_actions(
                 connected_device,
                 global_volume,
             )
@@ -712,7 +710,7 @@ async def connect(
 
 
 @app.post("/disconnect")
-async def disconnect(payload: Devices):
+async def disconnect():
     """
         Disconnects devices from the server.
 
@@ -722,7 +720,7 @@ async def disconnect(payload: Devices):
 
     global BASE_PORT
 
-    client_list = process_devices(client, payload)
+    client_list = process_devices(client, request.json['devices'])
 
     try:
         device: Device
@@ -742,7 +740,7 @@ async def disconnect(payload: Devices):
 
 
 @app.post("/restart")
-async def restart(payload: Devices):
+async def restart():
     """
         Restarts devices
 
@@ -752,7 +750,7 @@ async def restart(payload: Devices):
 
     global BASE_PORT
 
-    client_list = process_devices(client, payload)
+    client_list = process_devices(client, request.json['devices'])
 
     try:
         device: Device
@@ -819,24 +817,22 @@ async def screen_grab():
 
 
 @app.post("/volume")
-async def volume(payload: Volume):
+async def volume():
     """
         Sets the volume of a list of devices.
 
     :param volume: a Volume object containing a list of devices and a volume
     :return: a dictionary containing the success flag
     """
+    client_list = process_devices(client, request.json['devices'])
 
-    client_list = process_devices(client, payload)
-
-    global global_volume
-    global_volume = payload.volume
+    volume = request.json['volume']
 
     fails = []
     for device in client_list:
         try:
-            device.shell(f"cmd media_session volume --stream 3 --set {payload.volume}")
-            device.shell(f"media volume --stream 3 --set {payload.volume}")
+            device.shell(f"cmd media_session volume --stream 3 --set {volume}")
+            device.shell(f"media volume --stream 3 --set {volume}")
         except RuntimeError as e:
             fails.append(e)
 
@@ -882,7 +878,7 @@ async def check_image(device_serial, refresh_ms, size):
 
 @app.get("/device-screen/{refresh_ms}/{size}/{device_serial}")
 async def devicescreen(
-    request: Request, refresh_ms: int, size: str, device_serial: str
+    refresh_ms: int, size: str, device_serial: str
 ):
     try:
         image = await check_image(device_serial, refresh_ms, size)
@@ -929,7 +925,7 @@ async def _experiences(device_serial: str = None, device: Device = None) -> []:
     return experiences
 
 @app.get("/loaded-experiences/{device_serial}")
-async def loaded_experiences(request: Request, device_serial: str):
+async def loaded_experiences(device_serial: str):
     device: Device = client.device(device_serial)
     # https://stackoverflow.com/a/53634311/960471
 
@@ -937,12 +933,12 @@ async def loaded_experiences(request: Request, device_serial: str):
 
 
 @app.get("/device-experiences/{device_serial}")
-async def device_experiences(request: Request, device_serial: str):
+async def device_experiences(device_serial: str):
     device: Device = client.device(device_serial)
     # https://stackoverflow.com/a/53634311/960471
 
-    return templates.TemplateResponse(
-        "experiences/device_experiences.html",
+    return render_template(
+        "experiences/device_experiences.html", **
         {
             "request": request,
             "device": device_serial,
@@ -952,7 +948,7 @@ async def device_experiences(request: Request, device_serial: str):
 
 
 @app.get("/devices-experiences")
-async def devices_experiences(request: Request):
+async def devices_experiences():
     # https://stackoverflow.com/a/53634311/960471
 
     devices_lookup = {}
@@ -978,8 +974,8 @@ async def devices_experiences(request: Request):
                 row.append("")
         combined[experience] = row
 
-    return templates.TemplateResponse(
-        "experiences/devices_experiences.html",
+    return render_template(
+        "experiences/devices_experiences.html", **
         {
             "request": request,
             "combined": combined,
@@ -988,12 +984,12 @@ async def devices_experiences(request: Request):
 
 
 @app.get("/device-experiences/{device_serial}")
-async def device_experiences(request: Request, device_serial: str):
+async def get_device_experiences(device_serial: str):
     device: Device = client.device(device_serial)
     # https://stackoverflow.com/a/53634311/960471
 
-    return templates.TemplateResponse(
-        "experiences/device_experiences.html",
+    return render_template(
+        "experiences/device_experiences.html", **
         {
             "request": request,
             "device": device_serial,
@@ -1012,7 +1008,7 @@ async def get_running_app(device: DeviceAsync):
 
 @app.post("/command/{command}/{device_serial}")
 async def device_command(
-    request: Request, command: str, device_serial: str, db: Session = Depends(get_db)
+    command: str, device_serial: str, db: Session = get_db()
 ):
     device = None
     if device_serial != "ALL":
@@ -1117,7 +1113,7 @@ async def device_command(
 
 @app.post("/set-device-icon/{device_serial}")
 async def device_icon(
-    request: Request, device_serial: str, db: Session = Depends(get_db)
+    request, device_serial: str, db: Session = get_db()
 ):
     json = await request.json()
     col = json["col"]
@@ -1128,7 +1124,7 @@ async def device_icon(
 
 
 @app.get("/current-experience/{device_serial}")
-async def current_experience(request: Request, device_serial: str):
+async def current_experience(device_serial: str):
     device = await client_async.device(device_serial)
     if await check_alive(device):
         current_app = await get_running_app(device)
@@ -1137,3 +1133,7 @@ async def current_experience(request: Request, device_serial: str):
     else:
         current_app = 'please wait'
     return {"current_app": current_app}
+
+
+if __name__ == '__main__':
+    app.run(debug=True, port=8888)

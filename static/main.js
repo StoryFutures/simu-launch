@@ -32,7 +32,6 @@ function send(params) {
         selected_devices.push(element.deviceId)
     });
 
-
     if (!params['headers']) params['headers'] = {};
     if (!params['headers']["Content-type"]) params['headers']["Content-type"] = "application/json";
     if (!params['method']) params['method'] = 'POST';
