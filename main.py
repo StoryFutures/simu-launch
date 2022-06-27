@@ -873,7 +873,7 @@ async def check_image(device_serial, refresh_ms, size):
     if device is None:
         return None
 
-    if not check_alive(device):
+    if not await check_alive(device):
         return None
 
     im = await device.screencap()
