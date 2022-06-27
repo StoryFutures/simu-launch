@@ -11,7 +11,7 @@
                         <legend>Choose the experience to be stopped on the devices</legend>
                         <label>
                             <select id="stop_choices_dropdown" name="stop_choices" required class="form-select-lg" aria-label="Stop Experience">
-                                <option value="current">Current Running Experience</option>
+                                <option id="stopcurrentexp" value="current">Current Running Experience</option>
                                 {% for choice in choices %}
                                 <option value="{{ choice.0 }}">{{ choice.1 }}</option>
                                 {% endfor %}

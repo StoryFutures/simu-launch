@@ -322,5 +322,27 @@ var showStatus = (text = "The showStatus function was used incorrectly and statu
     status_global.innerHTML = text;
     statusToast.show();
 }
+
+function stopExperience() {
+    var devices = document.querySelector("device-table").getSelected();
+    var body = { "devices": devices, "experience": document.getElementById("stop_choices_dropdown").value }
+    send({
+        url: '/stop',
+        start: function () {
+            document.getElementById("stopButton").classList.add("disabled");
+        },
+        body: body,
+        success: function () {
+
+            showStatus("Experience has stopped on device(s)!");
+        },
+        finally: function () {
+            $('#stopExperienceModal').modal('hide');
+            document.getElementById("stopButton").classList.remove("disabled");
+        }
+    })
+
+}
+document.getElementById("stopcurrentexp").remove()
 get_devices();
 setInterval(get_devices, 8000);
