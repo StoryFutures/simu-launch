@@ -5,7 +5,7 @@ import datetime
 from dataclasses import dataclass
 from typing import Union
 
-ips = ['192.168.0.100', '192.168.0.200', ]
+ips = ['192.168.0.100', '192.168.0.200', '192.168.1.100']
 port = '8000'
 sleep_time = 3
 wait_time_s_for_connected_device_before_link_again = 60
@@ -24,7 +24,7 @@ class NoEndPointException(BaseException):
     pass
 
 
-def adb_command(arr: list[str]):
+def adb_command(arr):
     outcome = subprocess.run(arr, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     message = outcome.stdout.decode('ascii')
     err = outcome.stderr.decode('ascii')
@@ -85,11 +85,11 @@ def check(current_time: datetime = None,
                         f"{ip} {port}"]
             try:
                 outcome = adb_command(commands)
-                print(outcome, 334343434)
-                deviceinfo.connected = True
-                success = True
-                print(f'connected at endpoint {ip}')
-                return deviceinfo
+                if 'success' in outcome:
+                    deviceinfo.connected = True
+                    success = True
+                    print(f'connected at endpoint {ip}')
+                    return deviceinfo
             except NoEndPointException:
                 print(f'cant find endpoint {ip}')
 
