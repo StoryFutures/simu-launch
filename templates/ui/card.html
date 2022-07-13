@@ -17,12 +17,14 @@
           {% include "icons/paintbrush.html" %}
           <h5 id="device-name" class="card-text d-inline-block ms-2 float-end">Device ID unknown </h5>
         </btn>
-        <span id="batteryBadge" class="badge text-bg-primary">{% include "icons/battery-full.html" %}
-          <span id="batteryPercent">Battery Unknown</span></span>
-        <span class="badge btn text-bg-danger float-end ms-2" id="stop_some_experience" onclick="stop_some_experience(this)">
-          {% include 'icons/stop-fill.html' %} Stop</span>
-        <span id="checkExperiences" class="badge btn text-bg-primary float-end" onclick="gather_experiences(this)">{% include "icons/show-apps.html" %} Apps</span>
-      </div>
+        <div>
+            <span id="batteryBadge" class="badge text-bg-primary float-start">{% include "icons/battery-full.html" %}
+              <span id="batteryPercent">?</span></span>
+            <span class="badge btn text-bg-danger float-end ms-2" id="stop_some_experience" onclick="stop_some_experience(this)">
+              {% include 'icons/stop-fill.html' %} Stop</span>
+            <span id="checkExperiences" class="badge btn text-bg-primary float-end" onclick="gather_experiences(this)">{% include "icons/show-apps.html" %} Apps</span>
+          </div>
+        </div>
     </div>
   </div>
 </template>

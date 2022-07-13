@@ -364,6 +364,7 @@ class DeviceCard extends HTMLElement {
         this.updateMessage(device['message']);
         this.updated = undefined;
         var checkbox = this.shadowRoot.getElementById("cardSelect");
+        this.authorised = true;
 
         checkbox.addEventListener('change', () => {
             if (checkbox.checked) {
@@ -453,10 +454,11 @@ class DeviceCard extends HTMLElement {
     }
 
     getBatteryPercentage() {
-
+        if(!this.authorised) return
         fetch("/battery/" + this.deviceId).then(response => {
             return response.json()
         }).then(data => {
+            if(!data || data.length===0) return
             if (data >= 60) {
                 this.shadowRoot.getElementById("batteryBadge").classList.add("text-bg-success")
                 this.shadowRoot.getElementById("batteryBadge").classList.remove("text-bg-danger")
@@ -683,10 +685,11 @@ var devices_manager = function () {
                         cardList.push(card);
                         document.querySelector("#main-container").prepend(card);
                         card_map[device_id] = card
-                        screengrab_polling(device_id, true);
+                        if(device['message'] !== 'Unauthorised')screengrab_polling(device_id, true);
                     } else {
                         var card = card_map[device_id];
                         card.updateMessage(device['message']);
+                        card.authorised = device['message'] !== 'Unauthorised';
                         card.just_updated();
                         devices_so_far.splice(found_at, 1);
                     }
@@ -876,17 +879,17 @@ function experience_command(el, cmd, experience, devices, success_message, error
         url: '/command/' + cmd + '/' + device,
         success: function (data) {
 
-            if (data['message']) showStatus(data['message'])
+            if (data['message']!==undefined) showStatus(data['message'])
             else {
                 if (!success_message) success_message = "Experience has " + cmd + "ed!"
-                if (data['message']) success_message += ' ' + data['message']
+                if (data['message']!==undefined) success_message += ' ' + data['message']
                 showStatus(success_message);
             }
 
 
         },
         problem: function (error) {
-            if (data['message']) showStatus(data['message'])
+            if (data!==undefined && data['message']!==undefined) showStatus(data['message'])
             else {
                 if (!error_message) error_message = "Error " + cmd + "ing experience: " + error;
                 showStatus(error_message + error['message']);

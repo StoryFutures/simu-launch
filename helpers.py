@@ -1,8 +1,6 @@
 import os
 
-from ppadb.client import Client as AdbClient
-from ppadb.device import Device
-
+from adb_layer import scan_devices, adb_command
 from models_pydantic import Devices
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -10,13 +8,18 @@ HOME_APP_VERSION = "0.1"
 HOME_APP_APK = "com.TrajectoryTheatre.SimuLaunchHome.apk"
 HOME_APP_ENABLED = False
 
-def process_devices(client: AdbClient, payload: Devices):
+def process_devices(payload: Devices):
     if payload.devices:
-        return [Device(client, device) for device in payload.devices]
-    return client.devices()
+        return payload.devices
+    return scan_devices()
 
 
-def launch_app(device, app_name, d_type: bool = False, command: str = None):
+def install(serial, apk_path):
+    outcome = adb_command(['adb', '-s', {serial}, 'install', apk_path])
+    return outcome
+
+
+def launch_app(device_id, app_name, d_type: bool = False, command: str = None):
     """
         Launches an app on the specified device based on the device type and application name.
 
@@ -36,7 +39,7 @@ def launch_app(device, app_name, d_type: bool = False, command: str = None):
     else:
         command = "monkey -p " + app_name + " -v 1"
 
-    return device.shell(command)
+    return adb_command(['adb', 's', device_id] + command.split(' '))
 
 
 def save_file(filename, data):
@@ -49,12 +52,16 @@ def save_file(filename, data):
         f.write(data)
 
 
-def home_app_installed(device: Device):
-    home_app_installed_info = device.shell("dumpsys package com.TrajectoryTheatre.SimuLaunchHome")
+def check_package(device_id, package):
+    home_app_installed_info = adb_command(f"adb -s {device_id} dumpsys package {package}".split(' '))
     return "Unable to find" not in home_app_installed_info
 
 
-def connect_actions(device: Device = None, volume: int = None, ):
+def home_app_installed(device_id):
+    return check_package(device_id, 'com.TrajectoryTheatre.SimuLaunchHome')
+
+
+def connect_actions(device_serial: str, volume: int = None, ):
     """
         Applies any actions defined here to a device on initial connection.
 
@@ -62,32 +69,31 @@ def connect_actions(device: Device = None, volume: int = None, ):
     :param volume: the volume to set on the device.
     """
     try:
-        if device is None:
-            raise RuntimeError("No device present!")
 
         print("Performing initial connection setup..")
 
-        device.shell(f'cmd media_session volume --stream 3 --set {str(volume)}')
+        adb_command(f'adb -s {device_serial} cmd media_session volume --stream 3 --set {str(volume)}')
 
         print(f'Device volume set to {volume}!')
 
         timeout_hours = 4
         timeout = 60000 * 60 * timeout_hours  # 4 hours
-        device.shell(f'settings put system screen_off_timeout {timeout}')
+        adb_command(f'adb -s {device_serial} shell settings put system screen_off_timeout {timeout}'.split(' '))
         print(f'Device screen timout set to {timeout_hours} hours!')
 
         if HOME_APP_ENABLED:
-            if not home_app_installed(device):
+            if not home_app_installed(device_serial):
                 print("Home app not installed on device. Installing now..")
-                device.install("apks/" + HOME_APP_APK)
+                install(device_serial, "apks/" + HOME_APP_APK)
 
-            if HOME_APP_VERSION not in device.shell(
-                    "dumpsys package com.TrajectoryTheatre.SimuLaunchHome | grep versionName"):
+            device_info = f"adb -s {device_serial} dumpsys package com.TrajectoryTheatre.SimuLaunchHome | grep versionName"
+            if HOME_APP_VERSION not in adb_command(device_info.split(' ')):
                 print("Installed Home app isn't the latest version. Updating now..")
-                device.install("apks/" + HOME_APP_APK)
+                install(device_serial, "apks/" + HOME_APP_APK)
 
-            device.shell("am start -n com.TrajectoryTheatre.SimuLaunchHome/com.unity3d.player.UnityPlayerActivity")
+            cmd = f"adb -s {device_serial} shell am start -n com.TrajectoryTheatre.SimuLaunchHome/com.unity3d.player.UnityPlayerActivity"
+            adb_command(cmd.split(' '))
             print("Launched home app!")
-            print(f"Connect actions complete for {device.serial}")
+            print(f"Connect actions complete for {device_serial}")
     except RuntimeError as e:
         return {"success": False, "error": "An error occured: " + e.__str__()}

@@ -8,7 +8,9 @@
 
     </div>
     {{ experience.name }}
-    <button class="btn float-end" onclick="copy_experience_info(this)">copy details to database</button>
+    <button class="btn btn-primary btn-sm float-end" onclick="copy_experience_info(this)">copy details to database</button>
   </li>
+  {% else %}
+  <span class="text-danger">You have probably not authorised your device — no experiences could be retrieved</span>
   {% endfor %}
 </div>

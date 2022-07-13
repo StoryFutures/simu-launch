@@ -19,11 +19,6 @@ from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_utils.tasks import repeat_every
-from ppadb import InstallError
-from ppadb.client import Client as AdbClient
-from ppadb.client_async import ClientAsync as AdbClientAsync
-from ppadb.device import Device
-from ppadb.device_async import DeviceAsync
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTasks
@@ -31,13 +26,15 @@ from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
+from activator import adb_command
+from adb_layer import scan_devices, scan_devices_and_state
 from helpers import (
     launch_app,
     save_file,
     process_devices,
     connect_actions,
     HOME_APP_APK,
-    home_app_installed, HOME_APP_ENABLED,
+    home_app_installed, HOME_APP_ENABLED, install,
 )
 from models_pydantic import Volume, Devices, Experience, NewExperience, StartExperience
 from sql_app import models, crud
@@ -71,9 +68,10 @@ icons = [
     "heart-fill",
     "triangle-fill",
 ]
-cols = ["red", "pink", "fuchsia", "blue", "green"]
+cols = ["red", "orange", "yellow", "blue", "green"]
 
 check_for_new_devices_poll_s = 8
+
 defaults = {
     "screen_width": 192,
     "screen_height": 108,
@@ -93,9 +91,6 @@ def get_db():
 
 
 BASE_PORT = 5555
-
-client: AdbClient = AdbClient(host="127.0.0.1", port=5037)
-client_async: AdbClientAsync = AdbClientAsync(host="127.0.0.1", port=5037)
 
 
 async def wait_host_port(host, port, duration=10, delay=2):
@@ -143,33 +138,28 @@ def shell_command(device_id: str, command):
 async def wake():
     print(f'check screens awake {time.strftime("%H:%M:%S", time.localtime())}')
 
-    my_devices = await scan_devices()
-    my_devices = [device for device in my_devices if is_wireless(device.serial)]
+    my_devices = scan_devices_and_state()
+    my_devices = [device for device, state in my_devices if is_wireless(device) and state == 'device']
+
     count = 0
     devices_count = len(my_devices)
     for device in my_devices:
         count += 1
-        screen_state = subprocess.run([f"adb", '-s', device.serial, "shell", "dumpsys",
+        screen_state = subprocess.run([f"adb", '-s', device, "shell", "dumpsys",
                                   "power", "|", 'grep', "\'Display Power: state=OFF\'"],
                                  stdout=subprocess.PIPE).stdout.decode('ascii')
 
         screen_state_off = len(screen_state) > 0
         if screen_state_off:
-            print(f'{count}/{devices_count} Waking screen on device {device.serial}')
-            outcome = subprocess.run([f"adb", '-s', device.serial, "shell", "input", "keyevent", "26"],
+            print(f'{count}/{devices_count} Waking screen on device {device}')
+            outcome = subprocess.run([f"adb", '-s', device, "shell", "input", "keyevent", "26"],
                                      stdout=subprocess.PIPE).stdout.decode('ascii')
         else:
-            print(f'{count}/{devices_count} Screen already on with device {device.serial}')
+            print(f'{count}/{devices_count} Screen already on with device {device}')
 
 
-async def scan_devices():
-    outcome = subprocess.run(["adb", "devices"], stdout=subprocess.PIPE).stdout.decode('ascii')
-    alive = [serial.split('\t')[0] for serial in outcome.splitlines()[1:] if 'offline' not in serial and serial]
-    my_devices = [client.device(serial) for serial in alive]
-    return my_devices
 
-async def check_alive(device):
-    device_serial = device.serial
+async def check_alive(device_serial):
     if "." not in device_serial:
         return True
     try:
@@ -190,18 +180,9 @@ async def check_alive(device):
 def check_adb_running(func):
     @wraps(func)
     async def wrapper(*args, **kwargs):
-        try:
-            device: Device
-            client.devices()
-
-        except RuntimeError as e:
-            err = e.__str__()
-            if "no such device" in err:
-                print("issue disconnecting disconnected wifi device (caution)")
-            elif e.__str__().find("Is adb running on your computer?"):
-                print("ADB Server not running, starting it now!")
-                command = os.system("adb start-server")
-                print(command)
+        print('checking adb running')
+        adb_command(['adb', 'devices'])
+        print('checked adb running')
         return await func(*args, **kwargs)
 
     return wrapper
@@ -226,15 +207,13 @@ async def devices(db: Session = Depends(get_db)):
     _devices = []
     errs = []
 
-    device: Device
-    for device in await scan_devices():
+    for serial, state in scan_devices_and_state():
         device_info = {
             "message": "",
             "id": "",
             "icon": "",
         }
         try:
-            serial = str(device.serial)
             my_device_icon = get_device_decorations(db, serial)
             device_info["id"] = serial
             device_info["icon"] = my_device_icon
@@ -242,13 +221,11 @@ async def devices(db: Session = Depends(get_db)):
 
         except RuntimeError as e:
             errs.append(str(e))
-        try:
-            device.get_state()
-        except RuntimeError as e:
-            if "unauthorized" in str(e):
-                device_info["message"] = "Unauthorised"
-            if "disconnected" in str(e):
-                device_info["message"] = "Disconnected"
+
+        if "unauthorized" in state:
+            device_info["message"] = "Unauthorised"
+        elif "disconnected" in state:
+            device_info["message"] = "Disconnected"
 
         _devices.append(device_info)
 
@@ -258,6 +235,7 @@ async def devices(db: Session = Depends(get_db)):
 @app.get("/d")
 @check_adb_running
 async def devices_page(request: Request):
+
     return templates.TemplateResponse(
         "pages/devices_page.html",
         {
@@ -338,7 +316,7 @@ async def start(payload: StartExperience, db: Session = Depends(get_db)):
     :param db: the database dependency
     :return: dictionary of all device serial numbers
     """
-    client_list = process_devices(client, payload)
+    client_list = process_devices(payload)
 
     global simu_application_name
 
@@ -429,7 +407,7 @@ async def load(payload: Experience):
     :return: a success dictionary signifying the operation was successful
     """
 
-    client_list = process_devices(client, payload)
+    client_list = process_devices(payload)
 
     apk_paths = os.listdir("apks")
     apk_path = "apks/"
@@ -445,19 +423,15 @@ async def load(payload: Experience):
             "error": "Cannot find the Experience APK in the directory. Make sure you uploaded it!",
         }
     errs = []
-    try:
-        for device in client_list:
-            if not await check_alive(device):
-                errs.append(f'Problem installing on this device: {device.serial}. Temporarily unavailable')
-                continue
-            print("Installing " + apk_path + " on " + device.serial)
-            p = Process(target=device.install, args=(apk_path,))
-            p.start()
-    except InstallError as e:
-        return {"success": False, "error": e.__str__()}
 
-    if errs:
-        return {"success": False, "error": ','.join(errs)}
+    for device_serial in client_list:
+        if not await check_alive(device_serial):
+            errs.append(f'Problem installing on this device: {device_serial}. Temporarily unavailable')
+            continue
+        print("Installing " + apk_path + " on " + device_serial)
+        p = Process(target=install, args=(device_serial, apk_path,))
+        p.start()
+
     return {"success": True, "device_count": len(client_list)}
 
 
@@ -520,9 +494,8 @@ async def add_remote_experience(payload: NewExperience, db: Session = Depends(ge
 
 def launch_home_app(device_id: str):
     if HOME_APP_ENABLED:
-        device = client.device(device_id)
         outcome = launch_app(
-            device,
+            device_id,
             app_name=HOME_APP_APK,
             d_type=True,
             command="com.unity3d.player.UnityPlayerActivity",
@@ -540,7 +513,7 @@ async def stop(payload: Experience, db: Session = Depends(get_db)):
     :return: a dictionary containing the success flag of the operation and any errors
     """
 
-    client_list = process_devices(client, payload)
+    client_list = process_devices(payload)
 
     if not payload.experience:
         return {"success": False, "error": "No experience to be stopped"}
@@ -558,11 +531,11 @@ async def stop(payload: Experience, db: Session = Depends(get_db)):
     )
 
     try:
-        for device in client_list:
-            print("Stopped experience on device " + device.serial)
+        for device_serial in client_list:
+            print("Stopped experience on device " + device_serial)
             command = "am force-stop " + app_name
-            device.shell(command)
-            launch_home_app(device.serial)
+            adb_command(command.split(' '))
+            launch_home_app(device_serial)
     except RuntimeError as e:
         return {"success": False, "error": e.__str__()}
 
@@ -598,17 +571,18 @@ async def connect_raw(request: Request):
         if not remote_address:
             os.system("adb -s" + device_ip + " tcpip " + str(BASE_PORT))
 
+
+
         p = multiprocessing.Process(
-            target=client.remote_connect, args=(device_ip, BASE_PORT)
+            target=adb_command, args=(['connect', f"{device_ip}:{BASE_PORT}"], )
         )
         p.start()
 
         p.join(5)
 
         if not p.is_alive():
-            connected_device = Device(client, device_ip)
             connect_actions(
-                connected_device,
+                device_ip,
                 global_volume,
             )
 
@@ -645,16 +619,15 @@ async def connect(
 
     remote_address = ""
 
-    device: Device = client.device(device_serial)
-    home_app_already_installed = home_app_installed(device)
+    home_app_already_installed = home_app_installed(device_serial)
 
     print("json ", json)
     print("address ", remote_address)
-    print("device ", device_serial, device)
+    print("device ", device_serial)
 
     if not remote_address:
         try:
-            device_ip = device.shell("ip addr show wlan0")
+            device_ip = adb_command(f"adb -s {device_serial} shell ip addr show wlan0".split(' '))
         except RuntimeError:
             return {
                 "success": False,
@@ -668,65 +641,42 @@ async def connect(
         device_ip = remote_address
 
     try:
-        if not remote_address:
-            os.system("adb -s" + device.serial + " tcpip " + str(BASE_PORT))
 
-        p = multiprocessing.Process(
-            target=client.remote_connect, args=(device_ip, BASE_PORT)
+        outcome = adb_command(f'adb connect {device_ip}:{BASE_PORT}')
+
+        connect_actions(
+            device_ip,
+            global_volume,
         )
-        p.start()
 
-        p.join(5)
-
-        if not p.is_alive():
-            cmd = "adb -s " + device.serial + " tcpip " + str(BASE_PORT)
-            os.system(cmd)
-
-        p = multiprocessing.Process(
-            target=client.remote_connect, args=(device_ip, BASE_PORT)
+        background_tasks.add_task(
+            connect_actions,
+            device_ip,
+            global_volume,
         )
-        p.start()
+        connected = await wait_host_port(device_ip, BASE_PORT, duration=5, delay=2)
 
-        p.join(5)
-
-        if not p.is_alive():
-            connected_device = Device(client, device_ip)
-            connect_actions(
-                connected_device,
-                global_volume,
+        if connected:
+            print(
+                "Established connection with client "
+                + device_ip
+                + ":"
+                + str(BASE_PORT)
             )
+            message = f"successfully added device {device_ip}."
+            if HOME_APP_ENABLED:
+                if not home_app_installed(device_ip):
+                    message += (
+                        f" Please note that the home app needed to be installed, so your device wont "
+                        f"appear for a few moments"
+                    )
+            return {"success": True, "serial": device_ip, "message": message}
+        else:
+            return {
+                "success": False,
+                "error": "Your device is on a different wifi network",
+            }
 
-            background_tasks.add_task(
-                connect_actions,
-                connected_device,
-                global_volume,
-            )
-            connected = await wait_host_port(device_ip, BASE_PORT, duration=5, delay=2)
-
-            if connected:
-                print(
-                    "Established connection with client "
-                    + device_ip
-                    + ":"
-                    + str(BASE_PORT)
-                )
-                message = f"successfully added device {device_ip}."
-                if HOME_APP_ENABLED:
-                    if not home_app_installed(device):
-                        message += (
-                            f" Please note that the home app needed to be installed, so your device wont "
-                            f"appear for a few moments"
-                        )
-                return {"success": True, "serial": device_ip, "message": message}
-            else:
-                return {
-                    "success": False,
-                    "error": "Your device is on a different wifi network",
-                }
-
-        raise RuntimeError(
-            "Could not connect device. Make sure the device is connected on the same router as the server!"
-        )
     except RuntimeError as e:
         return {"success": False, "error": e.__str__()}
 
@@ -742,18 +692,17 @@ async def disconnect(payload: Devices):
 
     global BASE_PORT
 
-    client_list = process_devices(client, payload)
+    client_list = process_devices(payload)
 
     try:
-        device: Device
-        for device in client_list:
-            print("Disconnecting device " + device.serial + " from server!")
-            working = client.remote_disconnect(device.serial)
+        for device_serial in client_list:
+            print("Disconnecting device " + device_serial + " from server!")
+            working = adb_command(f'adb disconnect {device_serial}:{BASE_PORT}'.split(' '))
             if not working:
                 return {
                     "success": False,
                     "error": "Encountered an error disconnecting device with ID/IP: "
-                    + device.serial,
+                    + device_serial,
                 }
 
         return {"success": True}
@@ -772,18 +721,17 @@ async def restart(payload: Devices):
 
     global BASE_PORT
 
-    client_list = process_devices(client, payload)
+    client_list = process_devices(payload)
 
     try:
-        device: Device
-        for device in client_list:
-            print("Restarting device " + device.serial + " from server!")
-            working = device.reboot()
+        for device_serial in client_list:
+            print("Restarting device " + device_serial + " from server!")
+            working = adb_command(f'adb -s {device_serial} shell reboot'.split(' '))
             if not working:
                 return {
                     "success": False,
                     "error": "Encountered an error restarting device with ID/IP: "
-                    + device.serial,
+                    + device_serial,
                 }
 
         return {"success": True}
@@ -801,7 +749,7 @@ async def exit_server():
     """
 
     try:
-        result = client.kill()
+        result = adb_command(['kill-server',])
     except RuntimeError as e:
         return {"success": False, "errors": e.__str__()}
 
@@ -816,7 +764,7 @@ async def screen_grab():
     :return: a dictionary containing the success flag
     """
 
-    my_devices = await scan_devices()
+    my_devices = scan_devices()
 
     screen_caps_folder = "screenshots/"
 
@@ -846,7 +794,7 @@ async def volume(payload: Volume):
     :return: a dictionary containing the success flag
     """
 
-    client_list = process_devices(client, payload)
+    client_list = process_devices(payload)
 
     global global_volume
     global_volume = payload.volume
@@ -854,8 +802,8 @@ async def volume(payload: Volume):
     fails = []
     for device in client_list:
         try:
-            device.shell(f"cmd media_session volume --stream 3 --set {payload.volume}")
-            device.shell(f"media volume --stream 3 --set {payload.volume}")
+            adb_command(f"adb -s {device} shell cmd media_session volume --stream 3 --set {payload.volume}")
+            device.shell(f"adb -s {device} shell media volume --stream 3 --set {payload.volume}")
         except RuntimeError as e:
             fails.append(e)
 
@@ -869,27 +817,23 @@ devices_info = {}
 
 
 async def check_image(device_serial, refresh_ms, size):
-    device: DeviceAsync = await client_async.device(device_serial)
-    if device is None:
+
+    if not await check_alive(device_serial):
         return None
 
-    if not await check_alive(device):
-        return None
-
-    im = await device.screencap()
-    if im is None:
-        return None
-
-    _image = None
+    pipe = subprocess.Popen(f"adb -s {device_serial} shell screencap -p",
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, shell=True)
+    image_bytes = pipe.stdout.read().replace(b'\r\n', b'\n')
     try:
-        _image = cv2.imdecode(np.frombuffer(im, np.uint8), cv2.IMREAD_COLOR)
+        _image = cv2.imdecode(np.fromstring(image_bytes, np.uint8), cv2.IMREAD_COLOR)
     except cv2.error:
         return None
 
     if _image is None:
         return None
 
-    _image = _image[0 : _image.shape[0], 0 : int(_image.shape[1] * 0.5)]
+    _image = _image[0: _image.shape[0], 0 : int(_image.shape[1] * 0.5)]
 
     height = _image.shape[0]
     width = int(_image.shape[1] / height * defaults["screen_height"])
@@ -902,10 +846,12 @@ async def check_image(device_serial, refresh_ms, size):
     return base64.b64encode(encoded_img).decode("utf-8")
 
 
+@cache(expire=1)
 @app.get("/device-screen/{refresh_ms}/{size}/{device_serial}")
 async def devicescreen(
     request: Request, refresh_ms: int, size: str, device_serial: str
 ):
+
     try:
         image = await check_image(device_serial, refresh_ms, size)
         if not image:
@@ -920,31 +866,24 @@ async def devicescreen(
 
 @app.get("/battery/{device_serial}")
 async def battery(device_serial: str):
-    try:
-        device: Device = client.device(device_serial)
-        if not device:
-            return "Device does not exist"
-        battery_level = device.get_battery_level()
-        if str(battery_level) == "null":
-            return "?"
-        return battery_level
-    except RuntimeError as e:
-        if "device offline" in str(e):
-            return 0
-    return 0
+    battery_level = adb_command(f'adb -s {device_serial} shell dumpsys battery | grep level'.split(' '))
+    if str(battery_level) == "null":
+        return "?"
+    return battery_level.replace('level: ', '')
 
 
-async def _experiences(device_serial: str = None, device: Device = None) -> []:
-    if device is None:
-        device: Device = client.device(device_serial)
 
-    payload = device.shell("cmd package list packages -3").strip()
+
+async def _experiences(device_serial: str = None) -> []:
+
+    payload = adb_command(f"adb -s {device_serial} shell cmd package list packages -3".split(' ')).strip()
 
     experiences = []
 
     for package in payload.split("\n"):
         package = package.replace("package:", "")
-        experiences.append({"package": package, "name": package})
+        if len(package) > 0:
+            experiences.append({"package": package, "name": package})
 
     experiences.sort(key=lambda el: el["name"])
 
@@ -952,15 +891,12 @@ async def _experiences(device_serial: str = None, device: Device = None) -> []:
 
 @app.get("/loaded-experiences/{device_serial}")
 async def loaded_experiences(request: Request, device_serial: str):
-    device: Device = client.device(device_serial)
     # https://stackoverflow.com/a/53634311/960471
-
     return await _experiences(device_serial)
 
 
 @app.get("/device-experiences/{device_serial}")
 async def device_experiences(request: Request, device_serial: str):
-    device: Device = client.device(device_serial)
     # https://stackoverflow.com/a/53634311/960471
 
     return templates.TemplateResponse(
@@ -980,12 +916,12 @@ async def devices_experiences(request: Request):
     devices_lookup = {}
     counter = Counter()
 
-    for device in await scan_devices():
-        experiences = await _experiences(device=device)
+    for device_serial in scan_devices():
+        experiences = await _experiences(device_serial)
 
         experiences_map = {el["package"]: el["name"] for el in experiences}
         counter.update(experiences_map.keys())
-        devices_lookup[device.serial] = experiences_map
+        devices_lookup[device_serial] = experiences_map
 
     combined = {}
     for experience in [key for key, val in counter.most_common()]:
@@ -1008,7 +944,6 @@ async def devices_experiences(request: Request):
 
 @app.get("/device-experiences/{device_serial}")
 async def device_experiences(request: Request, device_serial: str):
-    device: Device = client.device(device_serial)
     # https://stackoverflow.com/a/53634311/960471
 
     return templates.TemplateResponse(
@@ -1021,10 +956,10 @@ async def device_experiences(request: Request, device_serial: str):
     )
 
 
-async def get_running_app(device: DeviceAsync):
-    current_app = await device.shell(
-        "dumpsys activity activities | grep ResumedActivity"
-    )
+async def get_running_app(device_serial):
+    current_app = adb_command(f"adb -s {device_serial} shell dumpsys activity activities | grep ResumedActivity".split(' ') )
+    if current_app == '':
+        return 'Unauthorized!'
     current_app = current_app.split(" ")[-2]
     return current_app.split("/")[0]
 
@@ -1033,17 +968,16 @@ async def get_running_app(device: DeviceAsync):
 async def device_command(
     request: Request, command: str, device_serial: str, db: Session = Depends(get_db)
 ):
-    device = None
-    if device_serial != "ALL":
-        device = await client_async.device(device_serial)
+
+    #if device_serial != "ALL":
 
     my_json = await request.json()
     experience = my_json["experience"]
 
-    async def get_exp_info(_d: Device):
-        my_info: str = await _d.shell(
-            f"dumpsys package | grep {experience} | grep Activity"
-        )
+    async def get_exp_info():
+        cmd = f"adb -s {device_serial} dumpsys package | grep {experience} | grep Activity".split(' ')
+        my_info: str = adb_command(cmd)
+
         my_info = my_info.strip().split("\n")[0]
         if not my_info:
             return ""
@@ -1051,37 +985,39 @@ async def device_command(
 
     if command == "start":
         # https://stackoverflow.com/a/64241561/960471
-        info = await get_exp_info(device)
-        outcome = await device.shell(f"am start -n {info}")
+        info = await get_exp_info()
+        outcome = adb_command(f"adb -s {device_serial} shell am start -n {info}".split(' '))
         return {"success": "Starting" in outcome, "message": outcome}
 
     elif command == "stop":
         # https://stackoverflow.com/a/56078766/960471
-        await device.shell(f"am force-stop {experience}")
-        launch_home_app(device.serial)
+        outcome = adb_command(f'adb -s {device_serial} shell am force-stop {experience}'.split(' '))
+        launch_home_app(device_serial)
         return {"success": True}
     elif command == "copy-details":
-        info: str = await device.shell(
-            f"dumpsys package | grep {experience} | grep Activity"
-        )
-        info = info.strip().split("\n")[0]
-        info = info.split(" ")[1]
-        item = APKDetailsBase(
-            apk_name=info,
-            device_type=2,
-            command="",
-        )
+        info: str = adb_command(f"adb -s {device_serial} shell dumpsys package | grep {experience} | grep Activity".split(' '))
+        try:
+            info = info.strip().split("\n")[0]
+            info = info.split(" ")[1]
+            item = APKDetailsBase(
+                apk_name=info,
+                device_type=2,
+                command="",
+            )
 
-        crud.create_apk_details_item(
-            db=db, item=APKDetailsCreate.parse_obj(item.dict())
-        )
-        return {"success": True}
+            crud.create_apk_details_item(
+                db=db, item=APKDetailsCreate.parse_obj(item.dict())
+            )
+            return {"success": True, 'message': 'Copied details to database!'}
+        except IndexError:
+            return {'success': False, 'message': 'There is an issue adding the details of this app to the database!'}
+
 
     elif command == "stop-some-experience":
-        current_app = await get_running_app(device)
+        current_app = await get_running_app(device_serial)
         if current_app == "com.oculus.shellenv":
             return {"success": True, "outcome": "No app to stop!"}
-        outcome = await device.shell(f"am force-stop {current_app}")
+        outcome = adb_command(f'adb -s {device_serial} shell am force-stop {current_app}'.split(' '))
         return {"success": True, "outcome": "Successfully stopped!"}
 
     ########### devices experiences menu
@@ -1090,9 +1026,8 @@ async def device_command(
 
         outcome = ""
         for device_serial in my_devices:
-            device: DeviceAsync = await client_async.device(device_serial)
-            outcome = await device.shell(f"am force-stop {experience}")
-            launch_home_app(device.serial)
+            outcome = adb_command(f'adb -s {device_serial} shell am force-stop {experience}')
+            launch_home_app(device_serial)
         return {"success": True, "message": outcome}
 
     elif command == "devices_experiences__start_experience_some":
@@ -1105,14 +1040,15 @@ async def device_command(
         )
         devices_list = [x for x in my_devices.split(",") if len(x) > 0]
 
-        info = await get_exp_info(await client_async.device(devices_list[0]))
+        # not that device_serial is defined at start of function and this is used within get_exp_info
+        device_serial = devices_list[0]
+        info = await get_exp_info()
         errs = []
         for device in devices_list:
-            device: DeviceAsync = await client_async.device(device)
-            outcome = await device.shell(f"am start -n {info}")
+            outcome = adb_command([f"adb -s {device} shell am start -n {info}".split(' ')])
 
             if "Exception" in outcome:
-                errs.append(f"An error occurred at device {device.serial}: \n" + outcome)
+                errs.append(f"An error occurred at device {device}: \n" + outcome)
         if errs:
             return {
                 "success": False,
@@ -1141,6 +1077,5 @@ async def device_icon(
 
 @app.get("/current-experience/{device_serial}")
 async def current_experience(request: Request, device_serial: str):
-    device = await client_async.device(device_serial)
-    current_app = await get_running_app(device)
+    current_app = await get_running_app(device_serial)
     return {"current_app": current_app}
