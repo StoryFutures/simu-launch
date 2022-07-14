@@ -32,6 +32,16 @@ def adb_command(arr):
             raise NoEndPointException
     return message
 
+def adb_image(device):
+    cmd = f'adb -s {device} shell screencap -p'.split(' ')
+    outcome = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    message = outcome.stdout
+    err = outcome.stderr.decode('ascii')
+    if err:
+        if 'Network is unreachable' in err:
+            raise NoEndPointException
+    return message
+
 
 def alert(count, delay: float = 1.0):
     while count > 0:

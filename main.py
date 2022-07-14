@@ -26,7 +26,7 @@ from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from activator import adb_command
+from activator import adb_command, adb_image
 from adb_layer import scan_devices, scan_devices_and_state
 from helpers import (
     launch_app,
@@ -807,22 +807,19 @@ devices_info = {}
 
 async def check_image(device_serial, refresh_ms, size):
 
-    if not await check_alive(device_serial):
-        return None
+    img = adb_image(device_serial)
 
-    with subprocess.Popen(f"adb -s {device_serial} shell screencap -p",
-                            stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, shell=True) as pipe:
-        image_bytes = pipe.stdout.read().replace(b'\r\n', b'\n')
-        print(image_bytes)
+    if img and len(img) > 5 and img[5] == 0x0d:
+        img = img.replace(b'\r\n', b'\n')
+
+
+    _image = None
     try:
-        _image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
-    except cv2.error as e:
-        print(1111, device_serial, e)
+        _image = cv2.imdecode(np.frombuffer(img, np.uint8), cv2.IMREAD_COLOR)
+    except cv2.error:
         return None
 
     if _image is None:
-        print(2222, device_serial)
         return None
 
     _image = _image[0: _image.shape[0], 0 : int(_image.shape[1] * 0.5)]
@@ -836,6 +833,7 @@ async def check_image(device_serial, refresh_ms, size):
 
     _, encoded_img = cv2.imencode(".png", image)
     return base64.b64encode(encoded_img).decode("utf-8")
+
 
 
 @cache(expire=1)
