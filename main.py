@@ -226,6 +226,8 @@ async def devices(db: Session = Depends(get_db)):
             device_info["message"] = "Unauthorised"
         elif "disconnected" in state:
             device_info["message"] = "Disconnected"
+        elif "offline" in state:
+            device_info["message"] = "Offline"
 
         _devices.append(device_info)
 
@@ -615,48 +617,35 @@ async def connect(
     """
     global BASE_PORT
 
-    json = await request.json() if len((await request.body()).decode()) > 0 else {}
-
-    remote_address = ""
-
-    home_app_already_installed = home_app_installed(device_serial)
-
-    print("json ", json)
-    print("address ", remote_address)
-    print("device ", device_serial)
-
-    if not remote_address:
-        try:
-            device_ip = adb_command(f"adb -s {device_serial} shell ip addr show wlan0".split(' '))
-        except RuntimeError:
-            return {
-                "success": False,
-                "error": "Via a popup box within the headset you have not specified that this "
-                "device can have permission to access the headset.",
-            }
-        device_ip = device_ip[device_ip.find("inet ") :]
+    try:
+        device_ip = adb_command(f"adb -s {device_serial} shell ip addr show wlan0 | grep inet".split(' '))
+        device_ip = device_ip[device_ip.find("inet "):]
         device_ip = device_ip[: device_ip.find("/")]
-        device_ip = device_ip[device_ip.find(" ") + 1 :]
-    else:
-        device_ip = remote_address
+        device_ip = device_ip[device_ip.find(" ") + 1:]
+
+    except RuntimeError:
+        return {
+            "success": False,
+            "error": "Via a popup box within the headset you have not specified that this "
+            "device can have permission to access the headset.",
+        }
+
+    outcome = adb_command(f"adb -s {device_serial} tcpip {BASE_PORT}".split(' '))
 
     try:
 
-        outcome = adb_command(f'adb connect {device_ip}:{BASE_PORT}')
+        outcome = adb_command(f'adb connect {device_ip}'.split(' '))
 
-        connect_actions(
-            device_ip,
-            global_volume,
-        )
-
-        background_tasks.add_task(
-            connect_actions,
-            device_ip,
-            global_volume,
-        )
         connected = await wait_host_port(device_ip, BASE_PORT, duration=5, delay=2)
 
         if connected:
+
+            background_tasks.add_task(
+                connect_actions,
+                device_ip,
+                global_volume,
+            )
+
             print(
                 "Established connection with client "
                 + device_ip
@@ -821,16 +810,19 @@ async def check_image(device_serial, refresh_ms, size):
     if not await check_alive(device_serial):
         return None
 
-    pipe = subprocess.Popen(f"adb -s {device_serial} shell screencap -p",
+    with subprocess.Popen(f"adb -s {device_serial} shell screencap -p",
                             stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, shell=True)
-    image_bytes = pipe.stdout.read().replace(b'\r\n', b'\n')
+                            stdout=subprocess.PIPE, shell=True) as pipe:
+        image_bytes = pipe.stdout.read().replace(b'\r\n', b'\n')
+        print(image_bytes)
     try:
-        _image = cv2.imdecode(np.fromstring(image_bytes, np.uint8), cv2.IMREAD_COLOR)
-    except cv2.error:
+        _image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+    except cv2.error as e:
+        print(1111, device_serial, e)
         return None
 
     if _image is None:
+        print(2222, device_serial)
         return None
 
     _image = _image[0: _image.shape[0], 0 : int(_image.shape[1] * 0.5)]
@@ -860,7 +852,6 @@ async def devicescreen(
     except RuntimeError as e:
         if "device offline" in str(e):
             return {"success": False, "device-offline": device_serial}
-
     return {"success": False}
 
 

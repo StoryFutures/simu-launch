@@ -72,7 +72,7 @@ def connect_actions(device_serial: str, volume: int = None, ):
 
         print("Performing initial connection setup..")
 
-        adb_command(f'adb -s {device_serial} cmd media_session volume --stream 3 --set {str(volume)}')
+        adb_command(f'adb -s {device_serial} cmd media_session volume --stream 3 --set {str(volume)}'.split(' '))
 
         print(f'Device volume set to {volume}!')
 
@@ -96,4 +96,4 @@ def connect_actions(device_serial: str, volume: int = None, ):
             print("Launched home app!")
             print(f"Connect actions complete for {device_serial}")
     except RuntimeError as e:
-        return {"success": False, "error": "An error occured: " + e.__str__()}
+        return {"success": False, "error": "An error occurred: " + e.__str__()}
