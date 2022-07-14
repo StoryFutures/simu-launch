@@ -1,5 +1,4 @@
 import subprocess
-import os
 import time
 import datetime
 from dataclasses import dataclass

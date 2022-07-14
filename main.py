@@ -22,7 +22,7 @@ from fastapi_utils.tasks import repeat_every
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTasks
-from starlette.requests import Request
+from starlette.requests import Request, ClientDisconnect
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
@@ -152,8 +152,7 @@ async def wake():
         screen_state_off = len(screen_state) > 0
         if screen_state_off:
             print(f'{count}/{devices_count} Waking screen on device {device}')
-            outcome = subprocess.run([f"adb", '-s', device, "shell", "input", "keyevent", "26"],
-                                     stdout=subprocess.PIPE).stdout.decode('ascii')
+            subprocess.Popen([f"adb", '-s', device, "shell", "input", "keyevent", "26"])
         else:
             print(f'{count}/{devices_count} Screen already on with device {device}')
 
@@ -208,6 +207,9 @@ async def devices(db: Session = Depends(get_db)):
     errs = []
 
     for serial, state in scan_devices_and_state():
+        if "offline" in state:
+            continue
+
         device_info = {
             "message": "",
             "id": "",
@@ -791,7 +793,7 @@ async def volume(payload: Volume):
     fails = []
     for device in client_list:
         try:
-            adb_command(f"adb -s {device} shell cmd media_session volume --stream 3 --set {payload.volume}")
+            adb_command(f"adb -s {device} shell cmd media_session volume --stream 3 --set {payload.volume}".split(' '))
             adb_command(f"adb -s {device} shell media volume --stream 3 --set {payload.volume}".split(' '))
         except RuntimeError as e:
             fails.append(e)
@@ -959,9 +961,15 @@ async def device_command(
 ):
 
     #if device_serial != "ALL":
+    try:
+        my_json = await request.json()
+    except ClientDisconnect:
+        return {"success": False, "outcome": "Browser disconnected from backend unexpectantly"}
 
-    my_json = await request.json()
-    experience = my_json["experience"]
+    try:
+        experience = my_json["experience"]
+    except KeyError:
+        return {"success": False, "outcome": "No experience specified"}
 
     async def get_exp_info():
         cmd = f'adb -s {device_serial} shell dumpsys package | grep {experience} | grep Activity'.split(' ')
@@ -1003,7 +1011,6 @@ async def device_command(
         except IndexError:
             return {'success': False, 'message': 'There is an issue adding the details of this app to the database!'}
 
-
     elif command == "stop-some-experience":
         current_app = await get_running_app(device_serial)
         if current_app == "com.oculus.shellenv":
@@ -1017,9 +1024,9 @@ async def device_command(
 
         outcome = ""
         for device_serial in my_devices:
-            outcome = adb_command(f'adb -s {device_serial} shell am force-stop {experience}')
+            outcome = adb_command(f'adb -s {device_serial} shell am force-stop {experience}'.split(' '))
             launch_home_app(device_serial)
-        return {"success": True, "message": outcome}
+        return {"success": True, "message": 'stopped the experience for some devices'}
 
     elif command == "devices_experiences__start_experience_some":
         my_devices = (
@@ -1034,9 +1041,10 @@ async def device_command(
         # not that device_serial is defined at start of function and this is used within get_exp_info
         device_serial = devices_list[0]
         info = await get_exp_info()
+
         errs = []
         for device in devices_list:
-            outcome = adb_command([f"adb -s {device} shell am start -n {info}".split(' ')])
+            outcome = adb_command(f"adb -s {device} shell am start -n {info}".split(' '))
 
             if "Exception" in outcome:
                 errs.append(f"An error occurred at device {device}: \n" + outcome)

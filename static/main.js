@@ -900,3 +900,15 @@ function experience_command(el, cmd, experience, devices, success_message, error
         }
     })
 }
+function starter() {
+    console.log('stopping')
+    $('#b2').click()
+
+    setTimeout(function () {
+        $('#b1').click()
+            console.log('starting')
+        setTimeout(function(){
+            starter();
+        },5000+Math.random()*2000)
+    }, 5000+Math.random()*2000)
+}
