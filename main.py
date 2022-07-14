@@ -803,7 +803,7 @@ async def volume(payload: Volume):
     for device in client_list:
         try:
             adb_command(f"adb -s {device} shell cmd media_session volume --stream 3 --set {payload.volume}")
-            device.shell(f"adb -s {device} shell media volume --stream 3 --set {payload.volume}")
+            adb_command(f"adb -s {device} shell media volume --stream 3 --set {payload.volume}".split(' '))
         except RuntimeError as e:
             fails.append(e)
 
@@ -975,13 +975,15 @@ async def device_command(
     experience = my_json["experience"]
 
     async def get_exp_info():
-        cmd = f"adb -s {device_serial} dumpsys package | grep {experience} | grep Activity".split(' ')
+        cmd = f'adb -s {device_serial} shell dumpsys package | grep {experience} | grep Activity'.split(' ')
         my_info: str = adb_command(cmd)
-
-        my_info = my_info.strip().split("\n")[0]
+        my_info = my_info.strip().splitlines()[0]
         if not my_info:
             return ""
-        return my_info.split(" ")[1]
+        try:
+            return my_info.split(" ")[1]
+        except IndexError:
+            return ""
 
     if command == "start":
         # https://stackoverflow.com/a/64241561/960471

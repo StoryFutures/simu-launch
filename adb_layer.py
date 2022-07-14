@@ -10,6 +10,7 @@ def adb_command(arr):
     outcome = subprocess.run(arr, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
     message = outcome.stdout.decode('ascii')
     err = outcome.stderr.decode('ascii')
+    print(message, err, 34334)
     if err:
         if 'Network is unreachable' in err:
             raise NoEndPointException
