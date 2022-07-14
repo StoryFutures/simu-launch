@@ -26,8 +26,7 @@ from starlette.requests import Request, ClientDisconnect
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from activator import adb_command, adb_image
-from adb_layer import scan_devices, scan_devices_and_state
+from adb_layer import scan_devices, scan_devices_and_state, adb_command, adb_image, adb_command_no_wait
 from helpers import (
     launch_app,
     save_file,
@@ -152,7 +151,7 @@ async def wake():
         screen_state_off = len(screen_state) > 0
         if screen_state_off:
             print(f'{count}/{devices_count} Waking screen on device {device}')
-            subprocess.Popen([f"adb", '-s', device, "shell", "input", "keyevent", "26"])
+            adb_command_no_wait([f"adb", '-s', device, "shell", "input", "keyevent", "26"])
         else:
             print(f'{count}/{devices_count} Screen already on with device {device}')
 
@@ -793,8 +792,8 @@ async def volume(payload: Volume):
     fails = []
     for device in client_list:
         try:
-            adb_command(f"adb -s {device} shell cmd media_session volume --stream 3 --set {payload.volume}".split(' '))
-            adb_command(f"adb -s {device} shell media volume --stream 3 --set {payload.volume}".split(' '))
+            adb_command_no_wait(f"adb -s {device} shell cmd media_session volume --stream 3 --set {payload.volume}".split(' '))
+            adb_command_no_wait(f"adb -s {device} shell media volume --stream 3 --set {payload.volume}".split(' '))
         except RuntimeError as e:
             fails.append(e)
 
