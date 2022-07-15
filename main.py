@@ -634,7 +634,6 @@ async def connect(
     outcome = adb_command(f"adb -s {device_serial} tcpip {BASE_PORT}".split(' '))
 
     try:
-
         outcome = adb_command(f'adb connect {device_ip}'.split(' '))
 
         connected = await wait_host_port(device_ip, BASE_PORT, duration=5, delay=2)
@@ -669,7 +668,8 @@ async def connect(
 
     except RuntimeError as e:
         return {"success": False, "error": e.__str__()}
-
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": 'Your device is on a diferent wifi network'}
 
 @app.post("/disconnect")
 async def disconnect(payload: Devices):
