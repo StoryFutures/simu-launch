@@ -631,11 +631,10 @@ async def connect(
             "device can have permission to access the headset.",
         }
 
-    outcome = adb_command(f"adb -s {device_serial} tcpip {BASE_PORT}".split(' '))
-
+    outcome = os.system("adb -s" + device_serial + " tcpip " + str(BASE_PORT))
+    time.sleep(1)
     try:
-        outcome = adb_command(f'adb connect {device_ip}'.split(' '))
-
+        outcome = os.system(f"adb connect {device_ip}:{BASE_PORT}")
         connected = await wait_host_port(device_ip, BASE_PORT, duration=5, delay=2)
 
         if connected:
@@ -686,8 +685,11 @@ async def disconnect(payload: Devices):
 
     try:
         for device_serial in client_list:
-            print("Disconnecting device " + device_serial + " from server!")
+            print(f"Disconnecting device {device_serial} from server!")
+            if ":" in device_serial:
+                device_serial = device_serial.split(":")[0]
             working = adb_command(f'adb disconnect {device_serial}:{BASE_PORT}'.split(' '))
+            print(111, working)
             if not working:
                 return {
                     "success": False,
@@ -1077,3 +1079,4 @@ async def device_icon(
 async def current_experience(request: Request, device_serial: str):
     current_app = await get_running_app(device_serial)
     return {"current_app": current_app}
+
