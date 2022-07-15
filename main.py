@@ -135,7 +135,7 @@ def shell_command(device_id: str, command):
 
 @app.on_event("startup")
 @repeat_every(seconds=30*1, raise_exceptions=True)
-async def wake():
+def wake():
     print(f'check screens awake {time.strftime("%H:%M:%S", time.localtime())}')
 
     my_devices = scan_devices_and_state()
