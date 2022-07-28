@@ -171,6 +171,25 @@ async def settings(screen_updates: int = Form(...), db: Session = Depends(get_db
     return {"success": True}
 
 
+async def construct_device_info(serial: str, db: Session):
+    device_info = {
+        "message": "",
+        "id": "",
+        "icon": "",
+    }
+
+    errs = []
+    try:
+        my_device_icon = get_device_decorations(db, serial)
+        device_info["id"] = serial
+        device_info["icon"] = my_device_icon
+        device_info["ip"] = len(serial.split(".")) >= 2
+
+    except RuntimeError as e:
+        errs.append(str(e))
+    return device_info, errs
+
+
 @app.get("/devices")
 @cache(expire=check_for_new_devices_poll_s)
 async def devices(db: Session = Depends(get_db)):
@@ -185,20 +204,10 @@ async def devices(db: Session = Depends(get_db)):
 
     device: Device
     for device in await scan_devices():
-        device_info = {
-            "message": "",
-            "id": "",
-            "icon": "",
-        }
-        try:
-            serial = str(device.serial)
-            my_device_icon = get_device_decorations(db, serial)
-            device_info["id"] = serial
-            device_info["icon"] = my_device_icon
-            device_info["ip"] = len(serial.split(".")) >= 2
 
-        except RuntimeError as e:
-            errs.append(str(e))
+        device_info, additional_errs = await construct_device_info(device.serial, db)
+        errs.extend(additional_errs)
+
         try:
             if await check_alive(device, client):
                 device.get_state()
@@ -590,7 +599,7 @@ async def connect_raw(request: Request):
 
 @app.get("/connect/{device_serial}")
 async def connect(
-    request: Request, device_serial: str, background_tasks: BackgroundTasks
+    request: Request, device_serial: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)
 ):
     """
         Connects a device wirelessly to the server on port 5555. After the device is connected, it can be unplugged from
@@ -675,7 +684,10 @@ async def connect(
                             f" Please note that the home app needed to be installed, so your device wont "
                             f"appear for a few moments"
                         )
-                return {"success": True, "serial": device_ip, "message": message}
+                device_info, _ = await construct_device_info(device_ip, db)
+                device_info['success'] = True
+                device_info['message'] = message
+                return device_info
             else:
                 return {
                     "success": False,

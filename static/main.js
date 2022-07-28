@@ -445,9 +445,12 @@ class DeviceCard extends HTMLElement {
     }
 
     updated_recently(){
+        if(!this.updated){
+            this.updated = new Date().getTime();
+            return false;
+        }
         var difference = (new Date().getTime() - this.updated) / 1000;
         var grace_period_after_headset_dies_s = 1;
-        console.log(difference,333)
         return difference < grace_period_after_headset_dies_s;
     }
 
@@ -508,7 +511,7 @@ class DeviceCard extends HTMLElement {
 
     updateMessage(str) {
         var el = this.shadowRoot.getElementById("message");
-        if (str.length > 0) {
+        if (str && str.length > 0) {
             el.hidden = false;
         } else {
             el.hidden = true;
@@ -584,6 +587,7 @@ var devices_manager = function () {
     }
 
     api.wifi_connect = function (el) {
+
         var device_id = el.getAttribute('device_id');
         var orig_text = el.innerHTML;
         el.innerHTML = 'please wait';
@@ -595,12 +599,15 @@ var devices_manager = function () {
             .then(function (json) {
                 if (json['success']) {
                     showStatus(json['message']);
+                    json['message'] = '';
+                    // below causing troubles
+                    //devices_manager.check_add_cards([json, ])
                 } else {
                     showStatus(json['error']);
                 }
             })
-            .catch(function () {
-                console.log('error with wifi connecting device ' + device_id);
+            .catch(function (err) {
+                console.log('error with wifi connecting device ' + device_id, err);
             })
             .finally(function () {
                 el.innerHTML = orig_text;
@@ -707,37 +714,7 @@ var devices_manager = function () {
                 return response.json()
             })
             .then(function (json) {
-                var devices_count = json['devices'].length;
-                if (devices_count > 0) {
-                    var found = document.getElementById('no-devices');
-                    if (found) found.remove();
-                }
-                var devices_so_far = Object.keys(card_map);
-
-                for (var device of json['devices']) {
-                    var device_id = device['id'];
-                    var found_at = devices_so_far.indexOf(device_id);
-                    var card;
-                    if (found_at === -1) {
-                        var placeholder = "/static/images/placeholder.jpg";
-                        if(!defaults.screenshots_enabled) placeholder =  '';
-                        card = new DeviceCard(placeholder, device, false);
-                        card.classList.add('col')
-                        cardList.push(card);
-                        document.querySelector("#main-container").prepend(card);
-                        card_map[device_id] = card
-                        screengrab_polling(device_id, true);
-                    } else {
-                        card = card_map[device_id];
-                        card.updateMessage(device['message']);
-                        card.just_updated();
-                        devices_so_far.splice(found_at, 1);
-                    }
-                }
-                for (var d_missing of devices_so_far) {
-                    remove_card(d_missing);
-                }
-
+                api.check_add_cards(json['devices']);
             })
             .catch(function (error) {
                 console.log(error);
@@ -747,6 +724,38 @@ var devices_manager = function () {
     get_devices();
     setInterval(get_devices, defaults.check_for_new_devices_poll);
 
+    api.check_add_cards = function(my_devices){
+        if (my_devices.length > 0) {
+            var found = document.getElementById('no-devices');
+            if (found) found.remove();
+        }
+        var devices_so_far = Object.keys(card_map);
+
+        for (var device of my_devices) {
+
+            var device_id = device['id'];
+            var found_at = devices_so_far.indexOf(device_id);
+            var card;
+            if (found_at === -1) {
+                var placeholder = "/static/images/placeholder.jpg";
+                if(!defaults.screenshots_enabled) placeholder =  '';
+                card = new DeviceCard(placeholder, device, false);
+                card.classList.add('col')
+                cardList.push(card);
+                document.querySelector("#main-container").prepend(card);
+                card_map[device_id] = card
+                screengrab_polling(device_id, true);
+            } else {
+                card = card_map[device_id];
+                card.updateMessage(device['message']);
+                card.just_updated();
+                devices_so_far.splice(found_at, 1);
+            }
+        }
+        for (var d_missing of devices_so_far) {
+            remove_card(d_missing);
+        }
+    }
 
     api.devices = function () {
         return card_map.keys;
